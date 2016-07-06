@@ -1,4 +1,6 @@
 {"PINGDOM_USERNAME" : "username",
  "PINGDOM_PASSWORD" : "password",
- "PINGDOM_APPKEY"   : "apikey"
+ "PINGDOM_APPKEY"   : "apikey",
+ "PINGDOM_DEBUG"    : false,
+ "PINGDOM_CACHE"    : false
 }
