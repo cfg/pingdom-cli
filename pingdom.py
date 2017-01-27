@@ -32,14 +32,17 @@ import time
 API_URL = 'https://api.pingdom.com/api/2.0/'
 
 class Pingdom(object):
-    def __init__(self, url=API_URL, username=None, password=None, appkey=None):
+    def __init__(self, url=API_URL, username=None, password=None, appkey=None, debug=False):
         self.url = url
-        self.appkey= appkey
-        password_manager = urllib2.HTTPPasswordMgrWithDefaultRealm()
-        password_manager.add_password(None, url, username, password)
-        auth_handler = urllib2.HTTPBasicAuthHandler(password_manager)
-        self.opener = urllib2.build_opener(auth_handler)
-        
+        self.appkey = appkey
+        self.debug = debug
+        self.password_manager = urllib2.HTTPPasswordMgrWithDefaultRealm()
+        self.password_manager.add_password(None, url, username, password)
+        self.auth_handler = urllib2.HTTPBasicAuthHandler(self.password_manager)
+        self.https_handler = urllib2.HTTPSHandler()
+        self.opener = urllib2.build_opener(self.auth_handler, self.https_handler)
+
+
     class RequestWithMethod(urllib2.Request):
         def __init__(self, url, data=None, headers={},
                      origin_req_host=None, unverifiable=False, http_method=None):
@@ -58,13 +61,28 @@ class Pingdom(object):
         else:
             data = None
         method_url = urljoin(self.url, url)
-        if method == "GET" and data:
+        if method == "GET" and data != None:
             method_url = method_url+'?'+data
             req = self.RequestWithMethod(method_url, http_method=method, data=None)
         else:
             req = self.RequestWithMethod(method_url, http_method=method, data=data)
         req.add_header('App-Key', self.appkey)
-        response = self.opener.open(req).read()
+
+        if method == "GET":
+            if self.debug:
+                print "GET URL: {url}".format( url=method_url )
+            response = self.opener.open(req).read()
+        else:
+            if self.debug:
+                print "*** using debug opener"
+                self.https_handler.set_http_debuglevel(1)
+
+            response = self.opener.open(req).read()
+
+            if self.debug:
+                print "*** resetting debug level"
+                self.https_handler.set_http_debuglevel(0)
+
         return json.loads(response)
         
     def check_by_name(self, name):

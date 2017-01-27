@@ -4,6 +4,8 @@ import os
 import re
 import sys
 import pingdom
+import types
+import pyfscache
 try:
     import simplejson as json
 except ImportError:
@@ -13,22 +15,51 @@ except ImportError:
 PINGDOM_USERNAME = 'username'
 PINGDOM_PASSWORD = 'password'
 PINGDOM_APPKEY = 'appkey'
+PINGDOM_DEBUG = False
+CACHE_DIR = 'cache'
 
 # JSON file with Pingdom credentials
 PINGDOM_AUTHFILE = 'auth.json'
 
+fscache = pyfscache.FSCache(CACHE_DIR, minutes=10)
+def load_params(params):
+    if params == None:
+        return params
 
-def auth():
+    if not(isinstance(params, dict)):
+        params = json.loads(str(params))
+
+    if isinstance(params, dict):
+       for k, v in params.items():
+           if type(v) == types.BooleanType:
+               params[k] = str(v).lower()
+
+    return params
+
+def load_config():
+    global PINGDOM_AUTHFILE
     global PINGDOM_USERNAME
     global PINGDOM_PASSWORD
     global PINGDOM_APPKEY
+    global PINGDOM_DEBUG
+
     if os.path.exists(PINGDOM_AUTHFILE):
         auth_data = json.loads(open(PINGDOM_AUTHFILE).read())
         PINGDOM_USERNAME = auth_data['PINGDOM_USERNAME']
         PINGDOM_PASSWORD = auth_data['PINGDOM_PASSWORD']
         PINGDOM_APPKEY = auth_data['PINGDOM_APPKEY']
+        if 'PINGDOM_DEBUG' in auth_data and auth_data['PINGDOM_DEBUG']:
+            PINGDOM_DEBUG = True
+        else:
+            PINGDOM_DEBUG = False
+
+def auth():
+    global PINGDOM_USERNAME
+    global PINGDOM_PASSWORD
+    global PINGDOM_APPKEY
+    global PINGDOM_DEBUG
     try:
-        return pingdom.Pingdom(username=PINGDOM_USERNAME, password=PINGDOM_PASSWORD, appkey=PINGDOM_APPKEY)
+        return pingdom.Pingdom(username=PINGDOM_USERNAME, password=PINGDOM_PASSWORD, appkey=PINGDOM_APPKEY, debug=PINGDOM_DEBUG)
     except Exception, err:
         sys.stderr.write(str(err)+"\n")
         sys.exit(1)
@@ -46,19 +77,55 @@ def validate_id(ident):
 
 
 def get_check_id(name):
+    check_id = cache_get(name)
+    if check_id != False:
+        return check_id
+
     try:
         check = pingdom_connection.check_by_name(name)
     except Exception, err:
+        cache_delete(name)
         sys.stderr.write(str(err)+"\n")
         print err.read()
         sys.exit(1)
 
     if len(check) != 0:
+        cache_add(name,  check[0]['id'])
         return check[0]['id']
     else:
         print "%s check not found" % name
+        cache_delete(name)
         return None
 
+def cache_get(site_name):
+    site_name = str(site_name)
+    if site_name in fscache:
+        return fscache[site_name]
+    else:
+        return False
+
+def cache_add(site_name, site_id):
+    site_name = str(site_name)
+    if cache_get(site_name) != False:
+        fscache.update_item(site_name, site_id)
+    else:
+        fscache[site_name] = site_id
+    return site_id
+
+def cache_delete(site_name):
+    site_name = str(site_name)
+    if cache_get(site_name) != False:
+        fscache.expire(site_name)
+        return True
+    else:
+        return False
+
+def get_id(site_name):
+    check_id = get_check_id(site_name)
+    if check_id != None:
+        print "Cache ", check_id, "for site name ", site_name
+    else:
+        print "Error, could not find ID for site name ", site_name
 
 def usage():
     print "usage: %s COMMAND CHECK_NAME [PARAMS]\n" % sys.argv[0]
@@ -72,18 +139,20 @@ def usage():
     print "        listids      - list all check ids"
     print "        listsites    - list all HTTP checks"
     print "        credits      - return info on remaining checks and credits"
+    print "        primecache   - prime the cache with check_name=>check_id mappings"
+    print "        get_id       - get the ID for a check name"
     print ""
 
 
 def pingdom_api_call(command, method, params=None):
     if params != None and not(isinstance(params, dict)):
         try:
-            params = json.loads(str(params))
+            params = load_params(params)
         except ValueError, err:
             err_msg = str(err) + ": %s\n" % params
             sys.stderr.write(err_msg)
             sys.exit(1)
-        
+
     try:
         res = pingdom_connection.method(command, method, params)
         return res
@@ -98,27 +167,27 @@ def get_credits():
     print json.dumps(res, sort_keys=True, indent=4)
 
 
-def list_check_names():
-    checks = pingdom_api_call("checks", "GET")
+def list_check_names(params=None):
+    checks = pingdom_api_call("checks", "GET", params)
     for check in checks['checks']:
         print check['name']
 
 
-def list_sites():
-    checks = pingdom_api_call("checks", "GET")
+def list_sites(params=None):
+    checks = pingdom_api_call("checks", "GET", params)
     for check in checks['checks']:
         if check['type'] == "http":
             print check['name']
 
 
-def list_check_ids():
-    checks = pingdom_api_call("checks", "GET")
+def list_check_ids(params=None):
+    checks = pingdom_api_call("checks", "GET", params)
     for check in checks['checks']:
         print check['id']
 
 
-def list_contacts():
-    contacts = pingdom_api_call("contacts", "GET")
+def list_contacts(params=None):
+    contacts = pingdom_api_call("contacts", "GET", params)
     for contact in contacts['contacts']:
         print "%s: %s" % (contact['id'], contact['name'])
 
@@ -135,11 +204,12 @@ def add_site_check(site_name, params=None):
                   "sendnotificationwhendown": 2,
                   "notifyagainevery": 120}
 
-    if matchObj:
-        print "Adding %s" % site_name
-        print pingdom_api_call("checks", "POST", params)
-    else:
-        print "Invalid site name: %s" % site_name
+    print pingdom_api_call("checks", "POST", params)
+    # if matchObj:
+    #     print "Adding %s" % site_name
+    #     # print pingdom_api_call("checks", "POST", params)
+    # else:
+    #     print "Invalid site name: %s" % site_name
 
 
 def delete_check(check_id):
@@ -153,6 +223,7 @@ def delete_check(check_id):
 def delete_site_check(site_name):
     check_id = get_check_id(site_name)
     if check_id != None:
+        cache_delete(site_name)
         delete_check(check_id)
 
 
@@ -174,7 +245,7 @@ def modify_check(check_id, params=None):
     check_id = str(check_id)
     if params != None:
         try:
-            params = json.loads(str(params))
+            params = load_params(params)
         except ValueError, err:
             err_msg = str(err) + ": %s" % params
             sys.stderr.write(err_msg)
@@ -190,17 +261,50 @@ def modify_site_check(site_name, params=None):
     if check_id != None:
         modify_check(check_id, params)
 
+def _n(single, plural, number):
+    if number == 1:
+        return single
+    else:
+        return plural
+
+def prime_cache():
+    params = None
+    checks = pingdom_api_call("checks", "GET", params)
+    for check in checks['checks']:
+        cache_add(check['name'], check['id'])
+
+    if checks['counts']['total'] == checks['counts']['filtered']:
+        print "Added {total} {checks} to cache.".format( total=checks['counts']['total'], checks=_n( 'check', 'checks', checks['counts']['total'] ) )
+    else:
+        print "Added {filtered} of {total} {checks} to cache.".format( filtered=checks['counts']['filtered'], total=checks['counts']['total'], checks=_n( 'check', 'checks', checks['counts']['total'] ) )
+
+
+
+# load the config first
+load_config()
 
 if (len(sys.argv) >= 2):
+
+    if '-d' in sys.argv or '--debug' in sys.argv:
+        PINGDOM_DEBUG = True
+    if '-q' in sys.argv or '--no-debug' in sys.argv:
+        PINGDOM_DEBUG = False
+
     pingdom_connection = auth()
     command = sys.argv[1]
     site_name = None
     params = None
 
     if len(sys.argv) >= 3:
-        site_name = sys.argv[2]
+        site_name = str(sys.argv[2])
     if len(sys.argv) == 4:
         params = sys.argv[3]
+
+    # Cheap way to support params for commands that don't have a site name
+    params_only = ( 'listnames', 'listsites', 'listids', 'listcontacts' )
+    if command in params_only and len(sys.argv) >= 3:
+        site_name = None
+        params = sys.argv[2]
 
     if command == 'add':
         add_site_check(site_name, params)
@@ -213,13 +317,29 @@ if (len(sys.argv) >= 2):
     elif command == 'listnames':
         list_check_names()
     elif command == 'listsites':
-        list_sites()
+        list_sites(params)
     elif command == 'listids':
-        list_check_ids()
+        list_check_ids(params)
     elif command == 'listcontacts':
-        list_contacts()
+        list_contacts(params)
     elif command == 'credits':
         get_credits()
+    elif command == 'get_id':
+        get_id(site_name)
+    elif command == 'get_cache':
+        check_id = cache_get(site_name)
+        if check_id != False:
+            print "From cache: {site_name}={site_id}".format(site_name=site_name, site_id=fscache[site_name])
+        else:
+            print "{site_name} was not found in cache.".format(site_name=site_name)
+
+    elif command == 'primecache' or command == 'prime_cache':
+        prime_cache()
+    elif command == 'purge':
+        if cache_delete(site_name):
+            print "Deleted {0} from the cache.".format( site_name )
+        else:
+            print "{0} was not found in the cache.".format( site_name )
     else:
         usage()
 else:
